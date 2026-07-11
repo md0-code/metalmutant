@@ -1,5 +1,7 @@
 # build tree (cloned engine, SDL2, output)
 build/
+build-miyoo-allium/
+dist/miyoo-allium/
 
 # never commit game data or runtime files
 *.IO
