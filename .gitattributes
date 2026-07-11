@@ -1,0 +1,4 @@
+# patch files must keep their exact line endings or git am breaks
+patches/*.patch -text
+engine/* text eol=lf
+*.ico binary
