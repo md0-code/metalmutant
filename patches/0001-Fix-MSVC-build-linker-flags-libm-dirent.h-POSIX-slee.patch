@@ -1,0 +1,70 @@
+From cf46d51464e7431514f13ab988d404ff6b08f75b Mon Sep 17 00:00:00 2001
+From: Matei Dobrescu <contact@md0.ro>
+Date: Sat, 11 Jul 2026 15:21:43 +0300
+Subject: [PATCH 1/2] Fix MSVC build: linker flags, libm, dirent.h, POSIX
+ sleep()
+
+- Do not pass -mconsole to the MSVC linker
+- Only link libm on non-MSVC toolchains
+- Add windows/ include dir so MSVC finds the bundled dirent.h shim
+- Define away POSIX sleep() in export.c (all call sites are no-ops)
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ CMakeLists.txt | 9 +++++++--
+ src/export.c   | 5 +++++
+ 2 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index f7d243e..388b753 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -5,7 +5,7 @@ include(CTest)
+ enable_testing()
+ 
+ # Comment "set..." to disable output to console for alis on Windows
+-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
++if (CMAKE_SYSTEM_NAME STREQUAL "Windows" AND NOT MSVC)
+     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -mconsole")
+ endif()
+ 
+@@ -60,6 +60,9 @@ endif(SDL2_MANUAL_SET)
+ 
+ find_package(SDL2 REQUIRED)
+ 
++if(MSVC)
++    include_directories(windows)
++endif()
+ include_directories(src/emu2149)
+ include_directories(src/emu8950)
+ include_directories(${SDL2_INCLUDE_DIRS})
+@@ -109,7 +112,9 @@ endif()
+ 
+ add_executable(${PROJECT_NAME} ${alis_SOURCES})
+ 
+-target_link_libraries(${PROJECT_NAME} m)
++if(NOT MSVC)
++    target_link_libraries(${PROJECT_NAME} m)
++endif()
+ target_link_libraries(${PROJECT_NAME} ${SDL2_LIBRARIES})
+ 
+ if(SDL2_MANUAL_SET)
+diff --git a/src/export.c b/src/export.c
+index 63615ce..ed5d04c 100644
+--- a/src/export.c
++++ b/src/export.c
+@@ -28,6 +28,11 @@
+ #include "utils.h"
+ #include <stdlib.h>
+ 
++#ifdef _MSC_VER
++// MSVC has no POSIX sleep(); all call sites here are sleep(0) debug no-ops
++#define sleep(x) ((void)0)
++#endif
++
+ 
+ void export_script(sAlisScriptData *script)
+ {
+-- 
+2.53.0.vfs.0.7
+

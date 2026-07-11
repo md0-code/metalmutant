@@ -1,0 +1,413 @@
+From bab26b8a1a747d426b0a90ab267ecc7b375d317c Mon Sep 17 00:00:00 2001
+From: Matei Dobrescu <contact@md0.ro>
+Date: Sat, 11 Jul 2026 15:22:01 +0300
+Subject: [PATCH 2/2] Metal Mutant port integration hooks (mmx module)
+
+Wires the self-contained mmx module (mmx.c/mmx.h/mmx_font.h, shipped
+separately) into the engine:
+
+- CMakeLists: build src/mmx.c
+- main.c: metal.ini config (data dir, fullscreen, scale, mute,
+  language, cheats), default data path next to the exe, reimplemented
+  -u unpack mode (was stubbed out upstream)
+- script.c: apply translation patching in script_init
+- sys_sdl2.c: window title, OSD renderer, cheat hotkeys (F5-F8),
+  Alt+Enter fullscreen toggle, per-frame cheat freeze; F9 wav export
+  removed
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ CMakeLists.txt     |   1 +
+ src/main.c         | 123 +++++++++++++++++++++++++++++++++++++++++--
+ src/script.c       |   5 +-
+ src/sys/sys_sdl2.c | 127 +++++++++++++++++++++++++++++++++++++--------
+ 4 files changed, 230 insertions(+), 26 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 388b753..b1fb33b 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -99,6 +99,7 @@ list(APPEND alis_SOURCES
+     ${CMAKE_CURRENT_LIST_DIR}/src/storenames.c
+     ${CMAKE_CURRENT_LIST_DIR}/src/unpack.c
+     ${CMAKE_CURRENT_LIST_DIR}/src/utils.c
++    ${CMAKE_CURRENT_LIST_DIR}/src/mmx.c
+     ${CMAKE_CURRENT_LIST_DIR}/src/newalis.c
+     ${CMAKE_CURRENT_LIST_DIR}/src/export.c
+ #   ${CMAKE_CURRENT_LIST_DIR}/src/font.c
+diff --git a/src/main.c b/src/main.c
+index 5289ec7..6996001 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -22,6 +22,7 @@
+ #include "alis.h"
+ #include "config.h"
+ #include "image.h"
++#include "mmx.h"
+ #include "unpack.h"
+ #include "sys/sys.h"
+ 
+@@ -42,6 +43,103 @@
+ 
+ int disalis = DEBUG_SCRIPT;
+ 
++#ifdef _WIN32
++# include <direct.h>
++# define ALIS_MKDIR(p) _mkdir(p)
++# define ALIS_STRCASECMP _stricmp
++#else
++# include <sys/stat.h>
++# define ALIS_MKDIR(p) mkdir(p, 0755)
++# define ALIS_STRCASECMP strcasecmp
++#endif
++
++// Mirrors the load path in script.c (script_load): read magic + check,
++// set alis.typepack, then either depack via unpack_script() or strip the header.
++static void unpack_mode(const char *path) {
++
++    // note: platform.path arrives with a trailing separator (see pl_guess)
++    char outdir[kPathMaxLen * 2];
++    snprintf(outdir, sizeof(outdir), "%sunpacked", path);
++    ALIS_MKDIR(outdir);
++
++    DIR *dir = opendir(path);
++    if (dir == NULL) {
++        printf("Cannot open folder: %s\n", path);
++        return;
++    }
++
++    int done = 0, skipped = 0;
++    struct dirent *ent;
++    while ((ent = readdir(dir)) != NULL) {
++        const char *dot = strrchr(ent->d_name, '.');
++        if (dot == NULL || ALIS_STRCASECMP(dot + 1, alis.platform.ext) != 0)
++            continue;
++
++        char inpath[kPathMaxLen * 2];
++        snprintf(inpath, sizeof(inpath), "%s%s", path, ent->d_name);
++
++        FILE *fp = fopen(inpath, "rb");
++        if (fp == NULL)
++            continue;
++
++        fseek(fp, 0L, SEEK_END);
++        u32 input_sz = (u32)ftell(fp);
++        rewind(fp);
++
++        u32 magic = fread32(fp);
++        u16 check = fread16(fp);
++
++        alis.typepack = magic >> 24;
++        if (alis.platform.kind == EPlatformPC)
++            alis.typepack &= 0xfe;
++
++        u32 unpack_sz = magic & 0x00ffffff;
++        u8 *buf = (u8 *)malloc(1024 + unpack_sz);
++        memset(buf, 0, 1024 + unpack_sz);
++        s32 out_sz = 0;
++
++        if (alis.typepack < 0) {
++            fclose(fp);
++            out_sz = unpack_script(inpath, buf);
++        }
++        else {
++            s32 seekto = kPackedHeaderSize;
++            if (check == kMainScriptID)
++                seekto += kVMSpecsSize;
++
++            out_sz = (s32)unpack_sz - seekto;
++            if (out_sz > (s32)(input_sz - seekto))
++                out_sz = (s32)(input_sz - seekto);
++
++            if (out_sz > 0) {
++                fseek(fp, seekto, SEEK_SET);
++                fread(buf, sizeof(u8), out_sz, fp);
++            }
++            fclose(fp);
++        }
++
++        if (out_sz > 0) {
++            char outpath[kPathMaxLen * 2];
++            snprintf(outpath, sizeof(outpath), "%s%c%s", outdir, kPathSeparator, ent->d_name);
++            FILE *ofp = fopen(outpath, "wb");
++            if (ofp) {
++                fwrite(buf, sizeof(u8), out_sz, ofp);
++                fclose(ofp);
++                printf("  %-14s %8u -> %8d bytes%s\n", ent->d_name, input_sz, out_sz,
++                       alis.typepack < 0 ? "" : "  (not packed, header stripped)");
++                done++;
++            }
++        }
++        else {
++            printf("  %-14s SKIPPED (unpack failed: %d)\n", ent->d_name, out_sz);
++            skipped++;
++        }
++        free(buf);
++    }
++    closedir(dir);
++    printf("\nUnpacked %d file(s), %d skipped -> %s\n", done, skipped, outdir);
++}
++
+ void usage(void) {
+ 
+     printf("%s ver. %s\n\n"\
+@@ -62,10 +160,11 @@ void usage(void) {
+ }
+ 
+ int main(int argc, char *argv[]) {
+-    
++
+     u8 result = 0;
++    setvbuf(stdout, NULL, _IONBF, 0);
+ 
+-    if (argc < 2) {
++    if (argc >= 2 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
+         usage();
+     }
+     else {
+@@ -115,15 +214,33 @@ int main(int argc, char *argv[]) {
+             }
+         }
+ 
++        // metal.ini next to the exe supplies defaults; CLI flags override
++        char *base = SDL_GetBasePath();
++        mmx_load_config(base ? base : "");
++        if (base) SDL_free(base);
++
++        if (path == NULL)
++            path = mmx_cfg.data_path;
++        if (mmx_cfg.fullscreen)
++            fullscreen = 1;
++        if (mmx_cfg.mute)
++            mutesound = 1;
++        if (mmx_cfg.scale > 0) {
++            extern int opt_scale;
++            opt_scale = mmx_cfg.scale;
++        }
++        mmx_translate_load();
++
+         sys_errors_init();
+ 
+         sPlatform *pl = pl_guess(path, unpackmode);
+ 
+         // Unpack mode
+         if(pl_supported(pl) && unpackmode) {
++            printf("Unpacking %s files in %s\n", pl->desc, pl->path);
+             alis.platform = *pl;
+             vram_init();
+-            // unpack_mode(alis.platform.path);
++            unpack_mode(alis.platform.path);
+             return 0;
+         }
+ 
+diff --git a/src/script.c b/src/script.c
+index b346bf1..d241226 100644
+--- a/src/script.c
++++ b/src/script.c
+@@ -24,6 +24,7 @@
+ #include "debug.h"
+ #include "image.h"
+ #include "mem.h"
++#include "mmx.h"
+ #include "platform.h"
+ #include "script.h"
+ #include "unpack.h"
+@@ -414,7 +415,9 @@ void script_guess_game(const char * script_path) {
+ }
+ 
+ sAlisScriptData * script_init(const char * name, u8 * data, u32 data_sz) {
+-    
++
++    mmx_translate_apply(data, (int)data_sz);
++
+     s16 id = swap16((data + 0));
+     s16 insert = debprotf(id);
+     if (insert > 0 && insert < alis.nbprog)
+diff --git a/src/sys/sys_sdl2.c b/src/sys/sys_sdl2.c
+index b2d8442..a8ff5ef 100644
+--- a/src/sys/sys_sdl2.c
++++ b/src/sys/sys_sdl2.c
+@@ -40,8 +40,12 @@
+ #include "channel.h"
+ #include "image.h"
+ #include "mem.h"
++#include "mmx.h"
++#include "mmx_font.h"
+ #include "platform.h"
+ #include "utils.h"
++
++void mmx_osd_render(void);
+ #include "video.h"
+ 
+ #include "emu2149.h"
+@@ -141,7 +145,7 @@ void sys_init(sPlatform *pl, int fullscreen, int mutesound) {
+     }
+     
+     printf("  Video initialization...\n");
+-    window = SDL_CreateWindow(kProgName, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, width * scale_x, height * scale_y, SDL_WINDOW_RESIZABLE | fullscreen * SDL_WINDOW_FULLSCREEN_DESKTOP);
++    window = SDL_CreateWindow("Metal Mutant", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, width * scale_x, height * scale_y, SDL_WINDOW_RESIZABLE | fullscreen * SDL_WINDOW_FULLSCREEN_DESKTOP);
+     if (window == NULL) {
+         fprintf(stderr, "   Could not create %.0fx%.0f window: %s\n", (width * scale_x), (height * scale_y), SDL_GetError());
+         exit(-1);
+@@ -272,12 +276,22 @@ void sys_sleep_interactive(s32 *loop, s32 intr)
+ 
+ void sys_delay_loop(void)
+ {
+-    sys_sleep_until(&loop_time, 4000);
++    mmx_cheat_frame(alis.mem);
++
++    if (mmx_turbo)
++        return;
++
++    sys_sleep_until(&loop_time, mmx_slowmo ? 16000 : 4000);
+ }
+ 
+ void sys_delay_frame(void)
+ {
+-    sys_sleep_until(&frame_time, k_frame_ticks * alis.ctiming);
++    mmx_cheat_frame(alis.mem);
++
++    if (mmx_turbo)
++        return;
++
++    sys_sleep_until(&frame_time, k_frame_ticks * alis.ctiming * (mmx_slowmo ? 4 : 1));
+ }
+ 
+ void sys_sleep_until_music_stops(void)
+@@ -425,30 +439,49 @@ void sys_poll_event(void) {
+ //                    break;
+ //                }
+ 
+-                case SDLK_F9:
+-                {
+-                    static int wav_recording = 0;
+-                    if (!wav_recording)
+-                    {
+-                        sys_wav_export_start("alis_music.wav");
+-                        wav_recording = 1;
+-                    }
+-                    else
+-                    {
+-                        sys_wav_export_stop();
+-                        wav_recording = 0;
+-                    }
+-                    break;
+-                }
+-
+                 case SDLK_F11:
+                     alis.state = eAlisStateSave;
++                    mmx_osd("STATE SAVED");
+                     break;
+ 
+                 case SDLK_F12:
+                     alis.state = eAlisStateLoad;
++                    mmx_osd("STATE LOADED");
++                    break;
++
++                case SDLK_F8:
++                    if (mmx_cfg.cheats) {
++                        mmx_turbo ^= 1;
++                        mmx_slowmo = 0;
++                        mmx_osd("TURBO %s", mmx_turbo ? "ON" : "OFF");
++                    }
++                    break;
++
++                case SDLK_F6:
++                    if (mmx_cfg.cheats)
++                        mmx_cheat_toggle_power(alis.mem);
++                    break;
++
++                case SDLK_F5:
++                    if (mmx_cfg.cheats)
++                        mmx_cheat_mark(alis.mem, kHostRAMSize);
++                    break;
++
++                case SDLK_F7:
++                    if (mmx_cfg.cheats) {
++                        mmx_slowmo ^= 1;
++                        mmx_turbo = 0;
++                        mmx_osd("SLOW MOTION %s", mmx_slowmo ? "ON" : "OFF");
++                    }
+                     break;
+-                    
++
++                case SDLK_RETURN:
++                    if (event.key.keysym.mod & KMOD_ALT) {
++                        u32 fs = SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP;
++                        SDL_SetWindowFullscreen(window, fs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
++                    }
++                    break;
++
+                 default:
+                     break;
+             }
+@@ -652,14 +685,64 @@ void sys_render(pixelbuf_t buffer) {
+     }
+ 
+     SDL_UpdateTexture(texture, NULL, pixels, width * sizeof(*pixels));
+-    
++
+     // render
+     SDL_RenderCopy(renderer, texture, NULL, NULL);
++    mmx_osd_render();
+     SDL_RenderPresent(renderer);
+-    
++
+     SDL_SemPost(render_sem);
+ }
+ 
++// Draws the mmx OSD line (cheat/state messages) over the frame,
++// top-left, using the embedded 8x8 font.
++void mmx_osd_render(void)
++{
++    const char *text = mmx_osd_current();
++    if (text == NULL)
++        return;
++
++    int len = (int)strlen(text);
++    int win_w = 0, win_h = 0;
++    SDL_GetRendererOutputSize(renderer, &win_w, &win_h);   // physical pixels
++
++    // the game itself renders through a scaled renderer — draw the OSD in
++    // physical pixels instead, or the scale is applied twice
++    float game_sx = 1.0f, game_sy = 1.0f;
++    SDL_RenderGetScale(renderer, &game_sx, &game_sy);
++    SDL_RenderSetScale(renderer, 1.0f, 1.0f);
++
++    int px = win_h / 300;                 // ~16px text on a 600px window
++    if (px < 1) px = 1;
++    while (px > 1 && len * 8 * px > win_w - 16)
++        px--;                             // long line: shrink to fit
++    int margin = 4 * px;
++
++    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
++    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 190);
++    SDL_Rect bg = { margin - 2 * px, margin - 2 * px,
++                    len * 8 * px + 4 * px, 8 * px + 4 * px };
++    SDL_RenderFillRect(renderer, &bg);
++
++    SDL_SetRenderDrawColor(renderer, 80, 255, 100, 255);   // HUD green
++    for (int i = 0; i < len; i++) {
++        unsigned char c = (unsigned char)text[i];
++        if (c < 32 || c > 126)
++            c = ' ';
++        const unsigned char *glyph = mmx_font8x8[c - 32];
++        for (int y = 0; y < 8; y++) {
++            for (int x = 0; x < 8; x++) {
++                if (glyph[y] & (1 << x)) {
++                    SDL_Rect dot = { margin + (i * 8 + x) * px, margin + y * px, px, px };
++                    SDL_RenderFillRect(renderer, &dot);
++                }
++            }
++        }
++    }
++    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
++    SDL_RenderSetScale(renderer, game_sx, game_sy);
++}
++
+ // ============================================================================
+ #pragma mark - SDL2 System deinit
+ // ============================================================================
+-- 
+2.53.0.vfs.0.7
+

@@ -1,0 +1,10 @@
+# build tree (cloned engine, SDL2, output)
+build/
+
+# never commit game data or runtime files
+*.IO
+*.io
+*.FIC
+*.fic
+alis.state
+cheat.dat
