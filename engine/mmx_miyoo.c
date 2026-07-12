@@ -324,6 +324,20 @@ static Uint32 miyoo_fb_pack(u32 argb)
            miyoo_fb_component(0xff, fb_var.transp);
 }
 
+static void miyoo_draw_text(u32 *pixels, int w, int px, int py, u32 color, const char *text)
+{
+    for (int i = 0; text[i] && px + (i + 1) * 8 <= w; i++) {
+        unsigned char c = (unsigned char)text[i];
+        if (c < 32 || c > 126)
+            c = ' ';
+        const unsigned char *glyph = mmx_font8x8[c - 32];
+        for (int y = 0; y < 8; y++)
+            for (int x = 0; x < 8; x++)
+                if (glyph[y] & (1 << x))
+                    pixels[(py + y) * w + px + i * 8 + x] = color;
+    }
+}
+
 // Draws the mmx OSD line (cheat/state messages) into the source frame,
 // top-left, black box + HUD-green text, before the frame is scaled out.
 static void miyoo_osd_blit(u32 *pixels, int w, int h)
@@ -339,21 +353,15 @@ static void miyoo_osd_blit(u32 *pixels, int w, int h)
     if (len <= 0 || h < 16)
         return;
 
+    char clipped[64];   // max_chars is 39 on the 320px frame
+    snprintf(clipped, (size_t)len + 1, "%s", text);
+
     int margin = 4;
     for (int y = margin - 2; y < margin + 10; y++)
         for (int x = margin - 2; x < margin + len * 8 + 2; x++)
             pixels[y * w + x] = 0xff000000;
 
-    for (int i = 0; i < len; i++) {
-        unsigned char c = (unsigned char)text[i];
-        if (c < 32 || c > 126)
-            c = ' ';
-        const unsigned char *glyph = mmx_font8x8[c - 32];
-        for (int y = 0; y < 8; y++)
-            for (int x = 0; x < 8; x++)
-                if (glyph[y] & (1 << x))
-                    pixels[(margin + y) * w + margin + i * 8 + x] = 0xff50ff64;
-    }
+    miyoo_draw_text(pixels, w, margin, margin, 0xff50ff64, clipped);
 }
 
 void miyoo_present(u32 *pixels, int w, int h)
@@ -417,6 +425,32 @@ void miyoo_deinit(void)
 {
     miyoo_input_close();
     miyoo_fb_close();
+}
+
+// Full-screen error shown before exiting: launcher logs are invisible on
+// device, so startup failures (typically missing game data) must be drawn
+// on the panel. Usable before/without miyoo_init.
+void miyoo_fatal_message(const char *line1, const char *line2)
+{
+    int opened_here = fb_fd < 0;
+    if (opened_here && miyoo_fb_open() != 0)
+        return;
+
+    enum { W = 320, H = 200 };
+    u32 *buf = calloc((size_t)W * H, sizeof(u32));
+    if (buf) {
+        miyoo_draw_text(buf, W, 8, 80, 0xffff5050, "METAL MUTANT");
+        if (line1)
+            miyoo_draw_text(buf, W, 8, 100, 0xffffffff, line1);
+        if (line2)
+            miyoo_draw_text(buf, W, 8, 112, 0xffffffff, line2);
+        miyoo_present(buf, W, H);
+        free(buf);
+        sleep(6);
+    }
+
+    if (opened_here)
+        miyoo_fb_close();
 }
 
 #endif // ALIS_MIYOO_ALLIUM

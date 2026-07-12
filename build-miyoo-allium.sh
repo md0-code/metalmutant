@@ -172,8 +172,9 @@ cp "${ROOT_DIR}/dist-miyoo/metal.ini" "${PACKAGE_DEST}/metal.ini"
 cp "${ROOT_DIR}/dist-miyoo/README-MIYOO.txt" "${PACKAGE_DEST}/README-MIYOO.txt"
 cp -r "${ROOT_DIR}/dist/translations" "${PACKAGE_DEST}/translations"
 cat > "${PACKAGE_DEST}/data/PUT-GAME-FILES-HERE.txt" <<'EOF'
-Copy your original Metal Mutant game files (*.IO etc., Atari ST or DOS
-version) into this folder. No game data is distributed with this port.
+Copy your original Metal Mutant game files (Atari ST or DOS version)
+into this folder. The set must include MAIN.IO — that is the file the
+engine looks for. No game data is distributed with this port.
 EOF
 chmod +x "${PACKAGE_DEST}/metalmutant" "${PACKAGE_DEST}/launch.sh"
 

@@ -8,8 +8,10 @@ additions: config file, translation layer, cheats, save states.
 INSTALL
 -------
 1. Copy this MetalMutant.pak folder to Apps/ on your SD card.
-2. Copy your original Metal Mutant game files (*.IO etc., Atari ST or
-   DOS version) into MetalMutant.pak/data/.
+2. Copy your original Metal Mutant game files (Atari ST or DOS version)
+   into MetalMutant.pak/data/. The set must include MAIN.IO — that is
+   the file the engine looks for; without it the game shows
+   "NO GAME FILES FOUND" and exits.
    NO GAME DATA IS INCLUDED — bring your own copy.
 3. Launch Metal Mutant from the Apps menu.
 

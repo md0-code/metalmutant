@@ -42,4 +42,8 @@ u8   miyoo_joystick_bits(void);
 // frame onto /dev/fb0 (the Miyoo panel is 180-degree rotated).
 void miyoo_present(u32 *pixels, int w, int h);
 
+// Draws a full-screen error on the panel and holds it for a few seconds —
+// launcher logs are invisible on device. Usable before/without miyoo_init.
+void miyoo_fatal_message(const char *line1, const char *line2);
+
 #endif // ALIS_MIYOO_ALLIUM

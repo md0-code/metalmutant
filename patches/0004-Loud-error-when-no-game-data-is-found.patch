@@ -1,0 +1,53 @@
+From 15cb21584e0a7440565fc78bee739148365eddf5 Mon Sep 17 00:00:00 2001
+From: Matei Dobrescu <contact@md0.ro>
+Date: Mon, 13 Jul 2026 02:10:29 +0300
+Subject: [PATCH 4/4] Loud error when no game data is found
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Release (NDEBUG) builds compile ALIS_DEBUG out entirely, so a missing or
+unrecognized data folder — the first error every player hits — made the
+program exit without a word. Print a plain-printf explanation naming the
+searched path, and on the Miyoo also draw it on the panel for a few
+seconds (launcher logs are invisible on device); exit code 1.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/main.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/src/main.c b/src/main.c
+index 6996001..cd9ac35 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -23,6 +23,9 @@
+ #include "config.h"
+ #include "image.h"
+ #include "mmx.h"
++#ifdef ALIS_MIYOO_ALLIUM
++# include "mmx_miyoo.h"
++#endif
+ #include "unpack.h"
+ #include "sys/sys.h"
+ 
+@@ -283,6 +286,16 @@ int main(int argc, char *argv[]) {
+         }
+         else {
+             ALIS_DEBUG(EDebugFatal, "Platform '%s' is not supported.\n", pl->desc);
++
++            // ALIS_DEBUG is compiled out in Release (NDEBUG) builds, and this
++            // is the error every player hits first — always say it plainly
++            printf("ERROR: no supported game files found in: %s\n", path ? path : "(no data path)");
++            printf("Copy the original Metal Mutant files (MAIN.IO etc.) into that folder.\n");
++#ifdef ALIS_MIYOO_ALLIUM
++            miyoo_fatal_message("NO GAME FILES FOUND IN THE data FOLDER",
++                                "COPY MAIN.IO AND OTHER GAME FILES THERE");
++#endif
++            result = 1;
+         }
+     }
+     return result;
+-- 
+2.39.5
+
