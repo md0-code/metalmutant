@@ -26,6 +26,8 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include "alis.h"
+#include "image.h"
 #include "mmx.h"
 #include "mmx_font.h"
 #include "mmx_miyoo.h"
@@ -151,6 +153,170 @@ SDL_Keymod miyoo_mod_state(void)
 u8 miyoo_joystick_bits(void)
 {
     return joy_bits;
+}
+
+// ============================================================================
+#pragma mark - Audio pump
+// ============================================================================
+//
+// SDL's OSS backend opens /dev/dsp through the LFS open64() entry point,
+// which Allium's libpadsp.so preload does not intercept — so SDL audio
+// reports "no such device" even though OSS-over-padsp works (the fuse port
+// proves it with a plain open()). Drive /dev/dsp ourselves from a pump
+// thread instead. If the device still cannot be opened the pump keeps
+// calling the engine's audio callback and discards the output: the ALIS
+// music engine advances from that callback, so game logic must never
+// depend on a real audio device existing.
+
+#define MIYOO_OSS_DEVICE            "/dev/dsp"
+#define MIYOO_OSS_AFMT_S16_LE       0x00000010
+#define MIYOO_OSS_SNDCTL_DSP_SPEED       _IOWR('P', 2, int)
+#define MIYOO_OSS_SNDCTL_DSP_SETFMT      _IOWR('P', 5, int)
+#define MIYOO_OSS_SNDCTL_DSP_CHANNELS    _IOWR('P', 6, int)
+#define MIYOO_OSS_SNDCTL_DSP_SETFRAGMENT _IOWR('P', 10, int)
+// eight 4096-byte fragments: room to absorb scheduling jitter
+#define MIYOO_OSS_FRAGMENT          ((8 << 16) | 12)
+
+extern void sys_audio_callback(void *userdata, u8 *stream, s32 len);
+
+static int          dsp_fd = -1;
+static int          audio_freq = 22050;
+static SDL_mutex   *audio_mutex = NULL;
+static SDL_Thread  *audio_thread = NULL;
+static volatile int audio_running = 0;
+static int          audio_muted = 0;
+static u8          *audio_chunk = NULL;
+static int          audio_chunk_bytes = 0;
+
+// Opens /dev/dsp (best effort) and returns the sample rate the engine
+// should mix at. Call before the engine derives timing from the rate.
+int miyoo_audio_open(int freq)
+{
+    const char *env = getenv("MMX_SOUND_FREQ");
+    if (env && atoi(env) > 0)
+        freq = atoi(env);
+
+    audio_freq = freq;
+
+    dsp_fd = open(MIYOO_OSS_DEVICE, O_WRONLY);
+    if (dsp_fd < 0) {
+        fprintf(stderr, "   Could not open %s: %s — running silent\n",
+                MIYOO_OSS_DEVICE, strerror(errno));
+        return audio_freq;
+    }
+
+    int fragment = MIYOO_OSS_FRAGMENT;
+    int format = MIYOO_OSS_AFMT_S16_LE;
+    int channels = 1;
+    int speed = freq;
+    ioctl(dsp_fd, MIYOO_OSS_SNDCTL_DSP_SETFRAGMENT, &fragment);
+    if (ioctl(dsp_fd, MIYOO_OSS_SNDCTL_DSP_SETFMT, &format) < 0 ||
+        format != MIYOO_OSS_AFMT_S16_LE ||
+        ioctl(dsp_fd, MIYOO_OSS_SNDCTL_DSP_CHANNELS, &channels) < 0 ||
+        channels != 1) {
+        fprintf(stderr, "   %s rejected s16/mono — running silent\n", MIYOO_OSS_DEVICE);
+        close(dsp_fd);
+        dsp_fd = -1;
+        return audio_freq;
+    }
+    if (ioctl(dsp_fd, MIYOO_OSS_SNDCTL_DSP_SPEED, &speed) == 0 && speed > 0)
+        audio_freq = speed;
+
+    printf("  Audio: %s, %d Hz, s16 mono\n", MIYOO_OSS_DEVICE, audio_freq);
+    return audio_freq;
+}
+
+static int miyoo_audio_thread_fn(void *unused)
+{
+    (void)unused;
+    while (audio_running) {
+        SDL_LockMutex(audio_mutex);
+        sys_audio_callback(NULL, audio_chunk, audio_chunk_bytes);
+        SDL_UnlockMutex(audio_mutex);
+
+        if (dsp_fd >= 0) {
+            if (audio_muted)
+                memset(audio_chunk, 0, audio_chunk_bytes);
+            // blocking write against the fragment queue paces the loop
+            int off = 0;
+            while (off < audio_chunk_bytes) {
+                ssize_t n = write(dsp_fd, audio_chunk + off, audio_chunk_bytes - off);
+                if (n < 0) {
+                    if (errno == EINTR)
+                        continue;
+                    fprintf(stderr, "   %s write failed: %s — running silent\n",
+                            MIYOO_OSS_DEVICE, strerror(errno));
+                    close(dsp_fd);
+                    dsp_fd = -1;
+                    break;
+                }
+                off += (int)n;
+            }
+        }
+        else {
+            // no device: keep the callback (and the music engine) ticking
+            usleep((useconds_t)((1000000LL * (audio_chunk_bytes / 2)) / audio_freq));
+        }
+    }
+    return 0;
+}
+
+// Starts the pump thread; the engine's mixer state (PSG etc.) must be
+// initialized first, since the callback runs immediately.
+void miyoo_audio_run(int samples, int muted)
+{
+    if (audio_running)
+        return;
+
+    audio_muted = muted;
+    audio_chunk_bytes = samples * 2;
+    audio_chunk = calloc(1, (size_t)audio_chunk_bytes);
+    audio_mutex = SDL_CreateMutex();
+    if (audio_chunk == NULL || audio_mutex == NULL)
+        return;
+
+    audio_running = 1;
+    audio_thread = SDL_CreateThread(miyoo_audio_thread_fn, "mmx_audio", NULL);
+    if (audio_thread == NULL) {
+        audio_running = 0;
+        fprintf(stderr, "   Could not start audio thread: %s\n", SDL_GetError());
+    }
+}
+
+static void miyoo_audio_stop(void)
+{
+    if (audio_running) {
+        audio_running = 0;
+        SDL_WaitThread(audio_thread, NULL);
+        audio_thread = NULL;
+    }
+    if (audio_mutex) {
+        SDL_DestroyMutex(audio_mutex);
+        audio_mutex = NULL;
+    }
+    free(audio_chunk);
+    audio_chunk = NULL;
+    if (dsp_fd >= 0) {
+        close(dsp_fd);
+        dsp_fd = -1;
+    }
+}
+
+void miyoo_audio_lock(void)
+{
+    if (audio_mutex)
+        SDL_LockMutex(audio_mutex);
+}
+
+void miyoo_audio_unlock(void)
+{
+    if (audio_mutex)
+        SDL_UnlockMutex(audio_mutex);
+}
+
+int miyoo_audio_playing(void)
+{
+    return audio_running;
 }
 
 // ============================================================================
@@ -376,6 +542,20 @@ void miyoo_present(u32 *pixels, int w, int h)
         return;
     last_present_ticks = now;
 
+    // heartbeat for remote debugging: is the VM clock ticking, is the game
+    // actually drawing non-black pixels, is audio flowing?
+    static Uint32 last_diag = 0;
+    if (now - last_diag >= 5000) {
+        last_diag = now;
+        int probed = 0, nonblack = 0;
+        for (int i = w * 16; i < w * h; i += 7, probed++)
+            if ((pixels[i] & 0x00ffffff) != 0)
+                nonblack++;
+        printf("[miyoo] state=%d timeclock=%u vtiming=%u nonblack=%d/%d audio=%s@%d\n",
+               (int)alis.state, (unsigned)alis.timeclock, (unsigned)image.vtiming,
+               nonblack, probed, dsp_fd >= 0 ? "dsp" : "null", audio_freq);
+    }
+
     miyoo_osd_blit(pixels, w, h);
 
     if (miyoo_fb_update_cache(w, h))
@@ -423,6 +603,7 @@ int miyoo_init(void)
 
 void miyoo_deinit(void)
 {
+    miyoo_audio_stop();
     miyoo_input_close();
     miyoo_fb_close();
 }

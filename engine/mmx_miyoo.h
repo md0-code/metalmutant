@@ -46,4 +46,17 @@ void miyoo_present(u32 *pixels, int w, int h);
 // launcher logs are invisible on device. Usable before/without miyoo_init.
 void miyoo_fatal_message(const char *line1, const char *line2);
 
+// Audio pump: /dev/dsp via Allium's libpadsp OSS shim, driven by a thread
+// that runs the engine's SDL-style audio callback (SDL's own dsp backend
+// misses the shim because it opens through open64). With no device the
+// callback still runs so the music engine keeps advancing, just silently.
+// miyoo_audio_open returns the mixing rate; call it before the engine
+// derives timing from the rate, and miyoo_audio_run after the mixer
+// state (PSG/OPL) is initialized.
+int  miyoo_audio_open(int freq);
+void miyoo_audio_run(int samples, int muted);
+void miyoo_audio_lock(void);
+void miyoo_audio_unlock(void);
+int  miyoo_audio_playing(void);
+
 #endif // ALIS_MIYOO_ALLIUM

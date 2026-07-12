@@ -1,31 +1,37 @@
-From 67215aa9d5d931c2758933faad7e1e0ca7b06c5c Mon Sep 17 00:00:00 2001
+From 82aedccb4cdf5c042922fc63b03826a030f451fb Mon Sep 17 00:00:00 2001
 From: Matei Dobrescu <contact@md0.ro>
-Date: Sun, 12 Jul 2026 01:33:00 +0300
-Subject: [PATCH 3/3] Miyoo Mini (Allium CFW) port integration hooks (mmx_miyoo
+Date: Mon, 13 Jul 2026 02:39:13 +0300
+Subject: [PATCH 3/4] Miyoo Mini (Allium CFW) port integration hooks (mmx_miyoo
  module)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 Wires the self-contained mmx_miyoo module (mmx_miyoo.c/h/cmake, shipped
 separately) into the engine, enabled by -DALIS_MIYOO_ALLIUM=ON:
 
 - CMakeLists: ALIS_MIYOO_ALLIUM option; on Miyoo include src/mmx_miyoo.cmake
-  (static SDL2 with OSS audio, no video/joystick backends) instead of
+  (static SDL2, no audio/video/joystick backends) instead of
   find_package(SDL2), build src/mmx_miyoo.c, skip the standalone emu2149
   lib (it overrides CMAKE_C_FLAGS and breaks cross builds; alis compiles
   emu2149.c directly)
 - sys.c: route SDL_GetKeyboardState/SDL_GetModState to the evdev-fed shim
   (no SDL video driver on device means SDL's own state never updates);
-  OR the Miyoo button bits into sys_joy_compose
-- sys_sdl2.c: init without video/joystick and with non-fatal audio; poll
-  evdev buttons each cycle; present frames via /dev/fb0 instead of the
-  SDL renderer; no mouse cursor; audio open failure continues muted
-  (sound needs Allium's libpadsp.so OSS shim, see launch.sh)
+  OR the Miyoo button bits into sys_joy_compose; audio locks go to the
+  module's pump mutex
+- sys_sdl2.c: init without video/joystick/audio backends; poll evdev
+  buttons each cycle; present frames via /dev/fb0 instead of the SDL
+  renderer; no mouse cursor. Audio keeps the SDL-style callback but is
+  pumped by the module's /dev/dsp thread — SDL's dsp backend opens via
+  open64 which Allium's libpadsp.so shim does not intercept, and with no
+  device the pump still runs the callback so the music engine advances
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
- CMakeLists.txt     | 15 ++++++--
- src/sys/sys.c      | 12 +++++++
- src/sys/sys_sdl2.c | 85 ++++++++++++++++++++++++++++++++++++----------
- 3 files changed, 92 insertions(+), 20 deletions(-)
+ CMakeLists.txt     | 15 ++++++-
+ src/sys/sys.c      | 20 +++++++++-
+ src/sys/sys_sdl2.c | 99 +++++++++++++++++++++++++++++++++++++---------
+ 3 files changed, 112 insertions(+), 22 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 index b1fb33b..02fe53c 100644
@@ -72,7 +78,7 @@ index b1fb33b..02fe53c 100644
 +    add_subdirectory(src/emu2149)
 +endif()
 diff --git a/src/sys/sys.c b/src/sys/sys.c
-index b831314..1ccbe9d 100644
+index b831314..385813d 100644
 --- a/src/sys/sys.c
 +++ b/src/sys/sys.c
 @@ -81,6 +81,14 @@ SDL_Rect        dirty_mouse_rect;
@@ -90,7 +96,29 @@ index b831314..1ccbe9d 100644
  SDL_Renderer    *renderer;
  SDL_Texture     *texture;
  SDL_Window      *window;
-@@ -1147,6 +1155,10 @@ static u8 sys_joy_compose(int with_mouse_fire) {
+@@ -248,7 +256,9 @@ void signals_info(int signo) {
+ 
+ void sys_lock_audio(void)
+ {
+-#if ALIS_SDL_VER < 2
++#if defined(ALIS_MIYOO_ALLIUM)
++    miyoo_audio_lock();
++#elif ALIS_SDL_VER < 2
+     SDL_LockAudio();
+ #else
+     SDL_LockAudioDevice(audio_id);
+@@ -257,7 +267,9 @@ void sys_lock_audio(void)
+ 
+ void sys_unlock_audio(void)
+ {
+-#if ALIS_SDL_VER < 2
++#if defined(ALIS_MIYOO_ALLIUM)
++    miyoo_audio_unlock();
++#elif ALIS_SDL_VER < 2
+     SDL_UnlockAudio();
+ #else
+     SDL_UnlockAudioDevice(audio_id);
+@@ -1147,6 +1159,10 @@ static u8 sys_joy_compose(int with_mouse_fire) {
  #endif
  
      if (with_mouse_fire && mouse.lb) b |= 0x80;
@@ -102,7 +130,7 @@ index b831314..1ccbe9d 100644
  }
  
 diff --git a/src/sys/sys_sdl2.c b/src/sys/sys_sdl2.c
-index a8ff5ef..5a610b9 100644
+index a8ff5ef..4dfeb6c 100644
 --- a/src/sys/sys_sdl2.c
 +++ b/src/sys/sys_sdl2.c
 @@ -42,6 +42,9 @@
@@ -115,23 +143,22 @@ index a8ff5ef..5a610b9 100644
  #include "platform.h"
  #include "utils.h"
  
-@@ -120,6 +123,15 @@ void sys_init(sPlatform *pl, int fullscreen, int mutesound) {
+@@ -120,6 +123,14 @@ void sys_init(sPlatform *pl, int fullscreen, int mutesound) {
      scale_y = scale * aspect_ratio;
      
      printf("  SDL initialization...\n");
 +#ifdef ALIS_MIYOO_ALLIUM
-+    // no SDL video/joystick backend on device; audio failure is not fatal
++    // no SDL video/joystick/audio backend on device (audio goes through
++    // the mmx_miyoo /dev/dsp pump instead)
 +    if (SDL_Init(SDL_INIT_TIMER|SDL_INIT_EVENTS) < 0) {
 +        fprintf(stderr, "   Unable to initialize SDL: %s\n", SDL_GetError());
 +        exit(-1);
 +    }
-+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0)
-+        fprintf(stderr, "   No SDL audio: %s\n", SDL_GetError());
 +#else
      if (SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_JOYSTICK) < 0) {
          fprintf(stderr, "   Unable to initialize SDL: %s\n", SDL_GetError());
          exit(-1);
-@@ -135,6 +147,7 @@ void sys_init(sPlatform *pl, int fullscreen, int mutesound) {
+@@ -135,6 +146,7 @@ void sys_init(sPlatform *pl, int fullscreen, int mutesound) {
              printf("  Joystick: %s\n", SDL_JoystickName(sys_joy_handle));
          }
      }
@@ -139,7 +166,7 @@ index a8ff5ef..5a610b9 100644
  
      u32 timer_ms = alis.platform.is_little_endian ? 17 : 20;
      sys_timeclock_hz = 1000 / timer_ms;
-@@ -145,26 +158,32 @@ void sys_init(sPlatform *pl, int fullscreen, int mutesound) {
+@@ -145,26 +157,32 @@ void sys_init(sPlatform *pl, int fullscreen, int mutesound) {
      }
      
      printf("  Video initialization...\n");
@@ -178,7 +205,7 @@ index a8ff5ef..5a610b9 100644
      texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, width, height);
      if (texture == NULL) {
          fprintf(stderr, "   Could not create texture: %s\n", SDL_GetError());
-@@ -172,9 +191,10 @@ void sys_init(sPlatform *pl, int fullscreen, int mutesound) {
+@@ -172,9 +190,10 @@ void sys_init(sPlatform *pl, int fullscreen, int mutesound) {
          SDL_DestroyWindow(window);
          exit(-1);
      }
@@ -191,27 +218,33 @@ index a8ff5ef..5a610b9 100644
      cursor = NULL;
      dirty_mouse = 0;
      
-@@ -193,11 +213,18 @@ void sys_init(sPlatform *pl, int fullscreen, int mutesound) {
+@@ -192,12 +211,24 @@ void sys_init(sPlatform *pl, int fullscreen, int mutesound) {
+     desired_spec->userdata = NULL;
      desired_spec->size = desired_spec->samples * 2;
      
-     if ((audio_id = SDL_OpenAudioDevice(NULL, 0, desired_spec, audio_spec, 0)) <= 0 ) {
 +#ifdef ALIS_MIYOO_ALLIUM
-+        // keep the game playable without sound
-+        fprintf(stderr, "   Could not open audio: %s — continuing muted\n", SDL_GetError());
-+        *audio_spec = *desired_spec;
++    // SDL's dsp backend misses Allium's libpadsp open() shim (it opens via
++    // open64), so the mmx_miyoo module drives /dev/dsp itself; the engine
++    // keeps its SDL-style callback and spec
++    audio_id = -1;
++    *audio_spec = *desired_spec;
++    audio_spec->freq = miyoo_audio_open(22050);   // half rate: CPU headroom
++    audio_spec->samples = audio_spec->freq / 50;
++    audio_spec->size = audio_spec->samples * 2;
 +#else
+     if ((audio_id = SDL_OpenAudioDevice(NULL, 0, desired_spec, audio_spec, 0)) <= 0 ) {
          fprintf(stderr, "   Could not open audio: %s\n", SDL_GetError());
          exit(-1);
-+#endif
      }
 -    
++#endif
 +
      // Extended information on obtained audio for tests and reports
 +    if (audio_id > 0) {
      printf("  Opened audio device id %d successfully:\n", audio_id);
      printf("    Frequency:  %d\n", audio_spec->freq);
      printf("    Format:     0x%04x => %d bits per sample\n", audio_spec->format, (int) SDL_AUDIO_BITSIZE(audio_spec->format));
-@@ -206,7 +233,8 @@ void sys_init(sPlatform *pl, int fullscreen, int mutesound) {
+@@ -206,7 +237,8 @@ void sys_init(sPlatform *pl, int fullscreen, int mutesound) {
      printf("    Silence:    %d\n", audio_spec->silence);
      printf("    Padding:    %d\n", audio_spec->padding);
      printf("    Size:       %d\n", audio_spec->size);
@@ -221,17 +254,37 @@ index a8ff5ef..5a610b9 100644
      free(desired_spec);
      
      audio.host_freq = audio_spec->freq;
-@@ -218,7 +246,8 @@ void sys_init(sPlatform *pl, int fullscreen, int mutesound) {
+@@ -218,8 +250,14 @@ void sys_init(sPlatform *pl, int fullscreen, int mutesound) {
      isr_step = (double)sys_sfx_tick_hz / (double)(audio_spec->freq);
      isr_counter = 1;
      
--    SDL_PauseAudioDevice(audio_id, mutesound);
-+    if (audio_id > 0)
-+        SDL_PauseAudioDevice(audio_id, mutesound);
-     
++#ifdef ALIS_MIYOO_ALLIUM
++    // the pump calls the audio callback immediately: PSG/OPL state and
++    // isr_step above must already be set up
++    miyoo_audio_run(audio_spec->samples, mutesound);
++#else
+     SDL_PauseAudioDevice(audio_id, mutesound);
+-    
++#endif
++
      render_sem = SDL_CreateSemaphore(1);
      if (render_sem == NULL) {
-@@ -347,11 +376,16 @@ u8 sys_start(void) {
+         fprintf(stderr, "   Could not create semaphore: %s\n", SDL_GetError());
+@@ -296,8 +334,13 @@ void sys_delay_frame(void)
+ 
+ void sys_sleep_until_music_stops(void)
+ {
++#ifdef ALIS_MIYOO_ALLIUM
++    if (!miyoo_audio_playing())
++        return;
++#else
+     if (SDL_GetAudioDeviceStatus(audio_id) != SDL_AUDIO_PLAYING)
+         return;
++#endif
+     
+     audio.working = 1;
+ 
+@@ -347,11 +390,16 @@ u8 sys_start(void) {
  }
  
  void sys_poll_event(void) {
@@ -250,7 +303,7 @@ index a8ff5ef..5a610b9 100644
      // update mouse position
      SDL_GetMouseState(&mouse.x, &mouse.y);
  
-@@ -360,6 +394,7 @@ void sys_poll_event(void) {
+@@ -360,6 +408,7 @@ void sys_poll_event(void) {
  
      mouse.x = newx;
      mouse.y = newy / aspect_ratio;
@@ -258,7 +311,7 @@ index a8ff5ef..5a610b9 100644
  
      switch (event.type) {
  
-@@ -684,12 +719,16 @@ void sys_render(pixelbuf_t buffer) {
+@@ -684,12 +733,16 @@ void sys_render(pixelbuf_t buffer) {
          }
      }
  
@@ -275,7 +328,7 @@ index a8ff5ef..5a610b9 100644
  
      SDL_SemPost(render_sem);
  }
-@@ -748,21 +787,27 @@ void mmx_osd_render(void)
+@@ -748,21 +801,27 @@ void mmx_osd_render(void)
  // ============================================================================
  
  void sys_deinit(void) {
@@ -307,7 +360,7 @@ index a8ff5ef..5a610b9 100644
      SDL_Quit();
  }
  
-@@ -785,7 +830,11 @@ void sys_unlock_renderer(void) {
+@@ -785,7 +844,11 @@ void sys_unlock_renderer(void) {
  // =============================================================================
  
  void sys_dirty_mouse(void) {
