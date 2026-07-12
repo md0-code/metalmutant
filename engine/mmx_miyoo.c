@@ -31,6 +31,7 @@
 #include "mmx.h"
 #include "mmx_font.h"
 #include "mmx_miyoo.h"
+#include "video.h"
 
 // ============================================================================
 #pragma mark - Input
@@ -543,7 +544,8 @@ void miyoo_present(u32 *pixels, int w, int h)
     last_present_ticks = now;
 
     // heartbeat for remote debugging: is the VM clock ticking, is the game
-    // actually drawing non-black pixels, is audio flowing?
+    // actually drawing non-black pixels, is audio flowing? Second line
+    // separates "no pixel data composed" from "palette left all black".
     static Uint32 last_diag = 0;
     if (now - last_diag >= 5000) {
         last_diag = now;
@@ -554,6 +556,20 @@ void miyoo_present(u32 *pixels, int w, int h)
         printf("[miyoo] state=%d timeclock=%u vtiming=%u nonblack=%d/%d audio=%s@%d\n",
                (int)alis.state, (unsigned)alis.timeclock, (unsigned)image.vtiming,
                nonblack, probed, dsp_fd >= 0 ? "dsp" : "null", audio_freq);
+
+        int bufnz = 0, bufprobed = 0, palnz = 0;
+        if (host.pixelbuf.data) {
+            for (int i = 0; i < host.pixelbuf.w * host.pixelbuf.h; i += 7, bufprobed++)
+                if (host.pixelbuf.data[i])
+                    bufnz++;
+        }
+        if (host.pixelbuf.palette)
+            for (int i = 0; i < 256 * 4; i++)
+                if (host.pixelbuf.palette[i])
+                    palnz++;
+        printf("[miyoo] bufnz=%d/%d palnz=%d/1024 palc=%d film=%d,%d fswitch=%d\n",
+               bufnz, bufprobed, palnz, (int)image.palc,
+               (int)bfilm.type, (int)bfilm.playing, (int)alis.fswitch);
     }
 
     miyoo_osd_blit(pixels, w, h);

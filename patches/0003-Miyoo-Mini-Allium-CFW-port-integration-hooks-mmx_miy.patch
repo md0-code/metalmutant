@@ -1,4 +1,4 @@
-From 82aedccb4cdf5c042922fc63b03826a030f451fb Mon Sep 17 00:00:00 2001
+From c1c79abf50fce988eb0842affb47940e3f808fe6 Mon Sep 17 00:00:00 2001
 From: Matei Dobrescu <contact@md0.ro>
 Date: Mon, 13 Jul 2026 02:39:13 +0300
 Subject: [PATCH 3/4] Miyoo Mini (Allium CFW) port integration hooks (mmx_miyoo
@@ -28,10 +28,10 @@ separately) into the engine, enabled by -DALIS_MIYOO_ALLIUM=ON:
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
- CMakeLists.txt     | 15 ++++++-
- src/sys/sys.c      | 20 +++++++++-
- src/sys/sys_sdl2.c | 99 +++++++++++++++++++++++++++++++++++++---------
- 3 files changed, 112 insertions(+), 22 deletions(-)
+ CMakeLists.txt     |  15 ++++++-
+ src/sys/sys.c      |  20 ++++++++-
+ src/sys/sys_sdl2.c | 103 +++++++++++++++++++++++++++++++++++++--------
+ 3 files changed, 116 insertions(+), 22 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 index b1fb33b..02fe53c 100644
@@ -130,7 +130,7 @@ index b831314..385813d 100644
  }
  
 diff --git a/src/sys/sys_sdl2.c b/src/sys/sys_sdl2.c
-index a8ff5ef..4dfeb6c 100644
+index a8ff5ef..e07c3a6 100644
 --- a/src/sys/sys_sdl2.c
 +++ b/src/sys/sys_sdl2.c
 @@ -42,6 +42,9 @@
@@ -284,7 +284,18 @@ index a8ff5ef..4dfeb6c 100644
      
      audio.working = 1;
  
-@@ -347,11 +390,16 @@ u8 sys_start(void) {
+@@ -334,6 +377,10 @@ u8 sys_start(void) {
+         sys_poll_event();
+     }
+ 
++#ifdef ALIS_MIYOO_ALLIUM
++    // NDEBUG builds print nothing from signals_info: say why we stopped
++    printf("[miyoo] VM loop exited: state=%d failure=%d\n", (int)alis.state, (int)failure);
++#endif
+     signals_info(failure);
+     if (!failure) {
+         ALIS_DEBUG(EDebugInfo, "Waiting for the VM kernel thread to finish...\n");
+@@ -347,11 +394,16 @@ u8 sys_start(void) {
  }
  
  void sys_poll_event(void) {
@@ -303,7 +314,7 @@ index a8ff5ef..4dfeb6c 100644
      // update mouse position
      SDL_GetMouseState(&mouse.x, &mouse.y);
  
-@@ -360,6 +408,7 @@ void sys_poll_event(void) {
+@@ -360,6 +412,7 @@ void sys_poll_event(void) {
  
      mouse.x = newx;
      mouse.y = newy / aspect_ratio;
@@ -311,7 +322,7 @@ index a8ff5ef..4dfeb6c 100644
  
      switch (event.type) {
  
-@@ -684,12 +733,16 @@ void sys_render(pixelbuf_t buffer) {
+@@ -684,12 +737,16 @@ void sys_render(pixelbuf_t buffer) {
          }
      }
  
@@ -328,7 +339,7 @@ index a8ff5ef..4dfeb6c 100644
  
      SDL_SemPost(render_sem);
  }
-@@ -748,21 +801,27 @@ void mmx_osd_render(void)
+@@ -748,21 +805,27 @@ void mmx_osd_render(void)
  // ============================================================================
  
  void sys_deinit(void) {
@@ -360,7 +371,7 @@ index a8ff5ef..4dfeb6c 100644
      SDL_Quit();
  }
  
-@@ -785,7 +844,11 @@ void sys_unlock_renderer(void) {
+@@ -785,7 +848,11 @@ void sys_unlock_renderer(void) {
  // =============================================================================
  
  void sys_dirty_mouse(void) {
