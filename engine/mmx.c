@@ -211,7 +211,7 @@ static void mmx_cheat_addrs_load(void) {
     fclose(fp);
 
     if (locked_count > 0)
-        printf("Cheat: energy address(es) loaded from cheat.dat — F6 ready\n");
+        printf("Cheat: energy address(es) loaded from cheat.dat — " MMX_KEY_POWER " ready\n");
 }
 
 static void mmx_cheat_addrs_save(void) {
@@ -269,7 +269,7 @@ void mmx_cheat_mark(unsigned char *mem, unsigned int size) {
         memset(scan_cand, 1, size);
         scan_size = size;
         scan_marks = 1;
-        mmx_osd("CALIBRATION: TAKE A HIT, THEN PRESS F5 AGAIN");
+        mmx_osd("CALIBRATION: TAKE A HIT, PRESS " MMX_KEY_CALIBRATE " AGAIN");
         return;
     }
 
@@ -288,7 +288,7 @@ void mmx_cheat_mark(unsigned char *mem, unsigned int size) {
     scan_marks++;
 
     if (survivors == 0) {
-        mmx_osd("CALIBRATION RESET: NO MATCH, PRESS F5 TO RESTART");
+        mmx_osd("NO MATCH: CALIBRATION RESET, PRESS " MMX_KEY_CALIBRATE);
         scan_reset();
         return;
     }
@@ -299,7 +299,7 @@ void mmx_cheat_mark(unsigned char *mem, unsigned int size) {
             if (scan_cand[a])
                 locked_addr[locked_count++] = a;
         mmx_cheat_addrs_save();
-        mmx_osd("ENERGY LOCKED: F6 TOGGLES INFINITE POWER");
+        mmx_osd("ENERGY LOCKED: " MMX_KEY_POWER " = INFINITE POWER");
         printf("[cheat] locked bytes:");
         for (int i = 0; i < locked_count; i++)
             printf(" 0x%x", locked_addr[i]);
@@ -308,13 +308,13 @@ void mmx_cheat_mark(unsigned char *mem, unsigned int size) {
         return;
     }
 
-    mmx_osd("%u CANDIDATES: TAKE MORE DAMAGE, THEN F5", survivors);
+    mmx_osd("%u CANDIDATES: MORE DAMAGE, THEN " MMX_KEY_CALIBRATE, survivors);
 }
 
 void mmx_cheat_toggle_power(unsigned char *mem) {
 
     if (locked_count == 0) {
-        mmx_osd("NOT CALIBRATED: PRESS F5, TAKE DAMAGE, F5 AGAIN");
+        mmx_osd("NOT CALIBRATED: " MMX_KEY_CALIBRATE ", TAKE A HIT, " MMX_KEY_CALIBRATE " AGAIN");
         return;
     }
 

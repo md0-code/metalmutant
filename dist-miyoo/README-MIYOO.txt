@@ -48,8 +48,7 @@ found it is remembered in cheat.dat and X just works from then on.
   4. Press X anytime to freeze your energy at its current level.
 
 All cheat and save-state feedback is shown in-game (green text,
-top-left corner). On-screen messages still name the desktop keys
-(F5/F6/F11...) — the button mapping above applies.
+top-left corner); the messages name the actual device buttons.
 
 Loading a save state (R2) does NOT require recalibrating. To
 recalibrate (e.g. after a wrong lock), delete cheat.dat and repeat.

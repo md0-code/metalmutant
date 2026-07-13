@@ -7,6 +7,25 @@
 
 #define MMX_PATH_MAX 1024
 
+// Human-readable names of the port's hotkeys, used in player-facing
+// messages (OSD, console). The desktop build uses the F-keys; the Miyoo
+// build names the buttons they are mapped to (see mmx_miyoo.c key_map).
+#ifdef ALIS_MIYOO_ALLIUM
+# define MMX_KEY_CALIBRATE  "Y"
+# define MMX_KEY_POWER      "X"
+# define MMX_KEY_TURBO      "R1"
+# define MMX_KEY_SLOWMO     "L1"
+# define MMX_KEY_SAVE       "L2"
+# define MMX_KEY_LOAD       "R2"
+#else
+# define MMX_KEY_CALIBRATE  "F5"
+# define MMX_KEY_POWER      "F6"
+# define MMX_KEY_TURBO      "F8"
+# define MMX_KEY_SLOWMO     "F7"
+# define MMX_KEY_SAVE       "F11"
+# define MMX_KEY_LOAD       "F12"
+#endif
+
 typedef struct {
     char data_path[MMX_PATH_MAX];   // resolved absolute data folder
     char language[MMX_PATH_MAX];    // resolved translation file, empty = off
