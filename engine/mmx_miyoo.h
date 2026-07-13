@@ -46,6 +46,11 @@ void miyoo_present(u32 *pixels, int w, int h);
 // launcher logs are invisible on device. Usable before/without miyoo_init.
 void miyoo_fatal_message(const char *line1, const char *line2);
 
+// Fixes the basename case of `path` in place to match an existing file:
+// the engine lowercases whole paths before fopen, which fails on the
+// device's case-sensitive filesystem. Returns path.
+char *miyoo_path_ci(char *path);
+
 // Audio pump: /dev/dsp via Allium's libpadsp OSS shim, driven by a thread
 // that runs the engine's SDL-style audio callback (SDL's own dsp backend
 // misses the shim because it opens through open64). With no device the

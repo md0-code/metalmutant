@@ -1,6 +1,6 @@
-From c1c79abf50fce988eb0842affb47940e3f808fe6 Mon Sep 17 00:00:00 2001
+From 0f41a82c490e60a9947c1db2091901e9bd49c57f Mon Sep 17 00:00:00 2001
 From: Matei Dobrescu <contact@md0.ro>
-Date: Mon, 13 Jul 2026 02:39:13 +0300
+Date: Mon, 13 Jul 2026 03:00:55 +0300
 Subject: [PATCH 3/4] Miyoo Mini (Allium CFW) port integration hooks (mmx_miyoo
  module)
 MIME-Version: 1.0
@@ -13,25 +13,29 @@ separately) into the engine, enabled by -DALIS_MIYOO_ALLIUM=ON:
 - CMakeLists: ALIS_MIYOO_ALLIUM option; on Miyoo include src/mmx_miyoo.cmake
   (static SDL2, no audio/video/joystick backends) instead of
   find_package(SDL2), build src/mmx_miyoo.c, skip the standalone emu2149
-  lib (it overrides CMAKE_C_FLAGS and breaks cross builds; alis compiles
-  emu2149.c directly)
-- sys.c: route SDL_GetKeyboardState/SDL_GetModState to the evdev-fed shim
-  (no SDL video driver on device means SDL's own state never updates);
+  lib (it overrides CMAKE_C_FLAGS and breaks cross builds)
+- sys.c: route SDL_GetKeyboardState/SDL_GetModState to the evdev-fed shim;
   OR the Miyoo button bits into sys_joy_compose; audio locks go to the
-  module's pump mutex
+  module's pump mutex; sys_fopen/sys_fexists resolve paths case-
+  insensitively instead of strlower (which breaks on the device's
+  case-sensitive /mnt/SDCARD — every game resource open failed, leaving
+  a black screen with an idle VM)
+- opcodes.c: csload resolves the script path the same way
 - sys_sdl2.c: init without video/joystick/audio backends; poll evdev
   buttons each cycle; present frames via /dev/fb0 instead of the SDL
-  renderer; no mouse cursor. Audio keeps the SDL-style callback but is
-  pumped by the module's /dev/dsp thread — SDL's dsp backend opens via
-  open64 which Allium's libpadsp.so shim does not intercept, and with no
-  device the pump still runs the callback so the music engine advances
+  renderer; no mouse cursor; log why the VM loop exited (NDEBUG mutes
+  signals_info). Audio keeps the SDL-style callback but is pumped by the
+  module's /dev/dsp thread — SDL's dsp backend opens via open64 which
+  Allium's libpadsp.so shim does not intercept, and with no device the
+  pump still runs the callback so the music engine advances
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  CMakeLists.txt     |  15 ++++++-
- src/sys/sys.c      |  20 ++++++++-
+ src/opcodes.c      |   8 ++++
+ src/sys/sys.c      |  29 ++++++++++++-
  src/sys/sys_sdl2.c | 103 +++++++++++++++++++++++++++++++++++++--------
- 3 files changed, 116 insertions(+), 22 deletions(-)
+ 4 files changed, 133 insertions(+), 22 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 index b1fb33b..02fe53c 100644
@@ -77,8 +81,35 @@ index b1fb33b..02fe53c 100644
 +if(NOT ALIS_MIYOO_ALLIUM)
 +    add_subdirectory(src/emu2149)
 +endif()
+diff --git a/src/opcodes.c b/src/opcodes.c
+index 8148f18..ba9fde2 100644
+--- a/src/opcodes.c
++++ b/src/opcodes.c
+@@ -25,6 +25,9 @@
+ #include "channel.h"
+ #include "mem.h"
+ #include "image.h"
++#ifdef ALIS_MIYOO_ALLIUM
++# include "mmx_miyoo.h"
++#endif
+ #include "render3d.h"
+ #include "screen.h"
+ #include "unpack.h"
+@@ -1180,7 +1183,12 @@ static void cload(void) {
+         script_read_until_zero(name);
+         strcpy(strrchr(name, '.') + 1, alis.platform.ext);
+         strcat(path, name);
++#ifdef ALIS_MIYOO_ALLIUM
++        // keep the directory case; only the basename is matched on disk
++        script_load(miyoo_path_ci((char *)path));
++#else
+         script_load(strlower((char *)path));
++#endif
+         
+         is_delay_script(name);
+     }
 diff --git a/src/sys/sys.c b/src/sys/sys.c
-index b831314..385813d 100644
+index b831314..f34343e 100644
 --- a/src/sys/sys.c
 +++ b/src/sys/sys.c
 @@ -81,6 +81,14 @@ SDL_Rect        dirty_mouse_rect;
@@ -129,6 +160,31 @@ index b831314..385813d 100644
      return b;
  }
  
+@@ -1208,7 +1224,12 @@ FILE * sys_fopen(char * path, u16 mode) {
+     }
+ 
+     ALIS_DEBUG(EDebugInfo, " [%s][%.3x] ", path, mode);
++#ifdef ALIS_MIYOO_ALLIUM
++    // lowercasing the whole path breaks on case-sensitive /mnt/SDCARD
++    return fopen(miyoo_path_ci(path), flag);
++#else
+     return fopen(strlower(path), flag);
++#endif
+ }
+ 
+ int sys_fclose(FILE * fp) {
+@@ -1217,7 +1238,11 @@ int sys_fclose(FILE * fp) {
+ 
+ u8 sys_fexists(char * path) {
+     u8 ret = 0;
++#ifdef ALIS_MIYOO_ALLIUM
++    FILE * fp = fopen(miyoo_path_ci(path), "rb");
++#else
+     FILE * fp = fopen(strlower(path), "rb");
++#endif
+     if(fp) {
+         ret = 1;
+         sys_fclose(fp);
 diff --git a/src/sys/sys_sdl2.c b/src/sys/sys_sdl2.c
 index a8ff5ef..e07c3a6 100644
 --- a/src/sys/sys_sdl2.c

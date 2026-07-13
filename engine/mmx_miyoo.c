@@ -15,6 +15,12 @@
 
 #ifdef ALIS_MIYOO_ALLIUM
 
+// for readdir64: 32-bit readdir EOVERFLOWs on 64-bit-inode filesystems. Do
+// NOT build this file with _FILE_OFFSET_BITS=64 instead — that would turn
+// open() into open64(), which Allium's libpadsp audio shim does not hook.
+#define _LARGEFILE64_SOURCE 1
+
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/fb.h>
@@ -22,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -32,6 +39,53 @@
 #include "mmx_font.h"
 #include "mmx_miyoo.h"
 #include "video.h"
+
+// ============================================================================
+#pragma mark - Case-insensitive paths
+// ============================================================================
+
+// The engine lowercases whole paths before fopen (sys_fopen, the csload
+// opcode) — fine on Windows, fatal on the device where /mnt/SDCARD/... is
+// case-sensitive: every game resource open fails and the VM idles on a
+// black screen. Fix the basename case in place against the real directory
+// listing; the directory part comes from config/SDL_GetBasePath and is
+// already correct. Returns path (unchanged if no match — e.g. files about
+// to be created).
+char *miyoo_path_ci(char *path)
+{
+    FILE *probe = fopen(path, "rb");
+    if (probe) {
+        fclose(probe);
+        return path;
+    }
+
+    char *slash = strrchr(path, '/');
+    if (slash == NULL)
+        slash = strrchr(path, '\\');
+    if (slash == NULL || slash[1] == 0)
+        return path;
+
+    char dir[1024];
+    size_t dlen = (size_t)(slash - path);
+    if (dlen == 0 || dlen >= sizeof(dir))
+        return path;
+    memcpy(dir, path, dlen);
+    dir[dlen] = 0;
+
+    DIR *d = opendir(dir);
+    if (d == NULL)
+        return path;
+
+    struct dirent64 *ent;
+    while ((ent = readdir64(d)) != NULL) {
+        if (strcasecmp(ent->d_name, slash + 1) == 0) {
+            strcpy(slash + 1, ent->d_name);   // same length, case-only change
+            break;
+        }
+    }
+    closedir(d);
+    return path;
+}
 
 // ============================================================================
 #pragma mark - Input
